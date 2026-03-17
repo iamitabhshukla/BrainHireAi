@@ -46,6 +46,13 @@ app.listen(PORT, async () => {
     const res = await pool.query('SELECT NOW()');
     console.log(`✅ PostgreSQL connected — server time: ${res.rows[0].now}`);
 
+    // Auto-migrate: add parsed_json column if not present
+    await pool.query(`
+      ALTER TABLE resumes
+      ADD COLUMN IF NOT EXISTS parsed_json JSONB DEFAULT '{}'
+    `);
+    console.log('✅ DB migration: parsed_json column ensured on resumes table.');
+
     // Check that schema has been applied
     const tables = await pool.query(
       `SELECT table_name FROM information_schema.tables WHERE table_schema='public'`

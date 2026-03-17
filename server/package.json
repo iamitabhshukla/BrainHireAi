@@ -11,6 +11,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@cyber2024/pdf-parse-fixed": "^1.2.5",
     "@google/generative-ai": "^0.24.1",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
@@ -20,6 +21,7 @@
     "multer": "^2.1.1",
     "nodemon": "^3.1.14",
     "pdf-parse": "^2.4.5",
+    "pdfreader": "^3.0.8",
     "pg": "^8.20.0"
   }
 }

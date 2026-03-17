@@ -167,11 +167,10 @@ export default function ResumeUpload() {
         {/* Pipeline Diagram */}
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
           {[
-            { label: 'PDF Upload', color: '#a78bfa' },
-            { label: 'pdf-parse', color: '#60a5fa' },
-            { label: 'Gemini API', color: '#4ade80' },
-            { label: 'Skills · Education · Experience', color: '#facc15' },
-            { label: 'PostgreSQL', color: '#fb923c' },
+            { label: 'Resume Upload', color: '#a78bfa' },
+            { label: 'Gemini Insights', color: '#4ade80' },
+            { label: 'Skills · Education · Experience', color: '#60a5fa' },
+            { label: 'Interview Practice', color: '#fb923c' },
           ].map((step, i, arr) => (
             <React.Fragment key={i}>
               <span style={{

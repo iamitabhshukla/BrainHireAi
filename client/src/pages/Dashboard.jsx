@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
 import {
-  Brain, Upload, Play, BarChart3, CheckCircle, Clock,
+  Layers, Upload, Play, BarChart3, CheckCircle, Clock,
   TrendingUp, Zap, Award, Target, ChevronRight
 } from 'lucide-react';
 
@@ -82,7 +82,7 @@ export default function Dashboard() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             boxShadow: '0 0 20px rgba(139,92,246,0.4)',
           }}>
-            <Brain size={20} color="#fff" />
+            <Layers size={20} color="#fff" />
           </div>
           <div>
             <h1 style={{ fontSize: '1.65rem', fontWeight: 800, color: '#f1f5f9', lineHeight: 1 }}>
@@ -121,7 +121,7 @@ export default function Dashboard() {
             onClick={() => startInterview('hr')}
           />
           <InterviewTypeCard
-            type="mixed" icon={<Brain size={22} />} color="#60a5fa"
+            type="mixed" icon={<Layers size={22} />} color="#60a5fa"
             gradient="linear-gradient(135deg, rgba(96,165,250,0.08) 0%, rgba(99,102,241,0.04) 100%)"
             label="Mixed Interview"
             desc="The complete package — combines technical depth with behavioural assessment for a realistic final-round experience."
@@ -133,26 +133,49 @@ export default function Dashboard() {
       {/* Bottom — Resume Upload CTA + Recent Sessions */}
       <div className="grid-2">
         {/* Upload CTA */}
-        <div className="card card-accent" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: 16 }}>
+        <div className="card card-accent" style={{ display: 'flex', flexDirection: 'column', gap: 20, position: 'relative', overflow: 'hidden' }}>
+          {/* Decorative background flair */}
+          <div style={{ position: 'absolute', top: -40, right: -40, width: 120, height: 120, background: 'radial-gradient(circle, rgba(139,92,246,0.15) 0%, transparent 70%)', borderRadius: '50%', pointerEvents: 'none' }} />
+          
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-              <Upload size={20} color="#a78bfa" />
-              <span style={{ fontWeight: 700, fontSize: '1rem', color: '#f1f5f9' }}>Your Resume</span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(139,92,246,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Upload size={18} color="#a78bfa" />
+                </div>
+                <h3 style={{ fontWeight: 700, fontSize: '1.05rem', color: '#f1f5f9' }}>Your Resume</h3>
+              </div>
+              {stats?.skills?.length > 0 && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', color: '#4ade80', background: 'rgba(74,222,128,0.1)', padding: '4px 10px', borderRadius: 20, fontWeight: 600 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 8px #4ade80' }} /> Active
+                </span>
+              )}
             </div>
-            <p style={{ color: '#94a3b8', fontSize: '0.85rem', lineHeight: 1.7 }}>
-              Upload or update your resume PDF. BrainHire will extract your skills and craft questions tailored just for you.
+            <p style={{ color: '#94a3b8', fontSize: '0.875rem', lineHeight: 1.6 }}>
+              {stats?.skills?.length > 0 
+                ? "Your profile is ready. We'll use these extracted skills to personalize your interviews."
+                : "Upload your resume PDF. BrainHire will extract your skills and craft questions tailored just for you."}
             </p>
           </div>
-          {stats?.skills?.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {stats.skills.slice(0, 8).map((s, i) => (
-                <span key={i} className="badge badge-purple">{s}</span>
-              ))}
-              {stats.skills.length > 8 && <span className="badge badge-purple">+{stats.skills.length - 8} more</span>}
+
+          {stats?.skills?.length > 0 ? (
+            <div style={{ background: 'rgba(0,0,0,0.2)', padding: 16, borderRadius: 12, border: '1px solid rgba(255,255,255,0.03)' }}>
+              <h4 style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: '#64748b', fontWeight: 700, letterSpacing: '0.05em', marginBottom: 12 }}>Extracted Skills</h4>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {stats.skills.slice(0, 10).map((s, i) => (
+                  <span key={i} className="badge badge-purple" style={{ background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.3)' }}>{s}</span>
+                ))}
+                {stats.skills.length > 10 && <span className="badge" style={{ background: 'rgba(255,255,255,0.05)', color: '#94a3b8' }}>+{stats.skills.length - 10} more</span>}
+              </div>
+            </div>
+          ) : (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px dashed rgba(139,92,246,0.3)', borderRadius: 12, background: 'rgba(139,92,246,0.03)', padding: '30px 20px', textAlign: 'center' }}>
+              <p style={{ color: '#64748b', fontSize: '0.85rem' }}>No resume uploaded yet.<br/>Click below to get started.</p>
             </div>
           )}
-          <button className="btn btn-primary btn-sm" onClick={() => navigate('/upload')} style={{ alignSelf: 'flex-start' }}>
-            <Upload size={15} /> {stats?.skills?.length > 0 ? 'Update Resume' : 'Upload Resume'}
+
+          <button className="btn btn-primary" onClick={() => navigate('/upload')} style={{ width: '100%', display: 'flex', justifyContent: 'center', gap: 8, marginTop: 'auto' }}>
+            <Upload size={16} /> {stats?.skills?.length > 0 ? 'Update Resume' : 'Upload Resume'}
           </button>
         </div>
 

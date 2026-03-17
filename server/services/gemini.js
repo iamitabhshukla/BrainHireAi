@@ -117,94 +117,212 @@ Return ONLY valid JSON, no markdown code blocks, no extra text.
 }
 
 /**
- * LOCAL resume parser — works 100% offline, no Gemini API needed.
- * Scans the raw PDF text for known skills, degree keywords, and section headers.
- * Used as primary fallback when Gemini API is unavailable or rate-limited.
+ * Splits raw resume text into named sections by detecting common header patterns.
+ * Returns a map of { sectionName: sectionText }
+ */
+function splitSections(text) {
+  const lines = text.split('\n');
+  const HEADERS = [
+    { key: 'experience',     re: /^(work\s+)?experience|professional\s+experience|employment(\s+history)?|work\s+history/i },
+    { key: 'projects',       re: /^projects?|personal\s+projects?|academic\s+projects?|key\s+projects?|notable\s+projects?/i },
+    { key: 'education',      re: /^education|academic\s+(background|qualifications?)/i },
+    { key: 'skills',         re: /^(technical\s+)?skills?|core\s+competencies|technologies|tech\s+stack/i },
+    { key: 'certifications', re: /^certifications?|certificates?|licen[sc]es?|credentials?|achievements?/i },
+    { key: 'summary',        re: /^(professional\s+)?(summary|profile|objective|about(\s+me)?)/i },
+    { key: 'publications',   re: /^publications?|research|papers?/i },
+  ];
+
+  const sections = {};
+  let current = 'header';
+  let currentLines = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Detect section header: short line (< 60 chars) matching a known header pattern
+    const isHeader = trimmed.length < 60 && HEADERS.some(h => {
+      if (h.re.test(trimmed)) { current = h.key; currentLines = []; return true; }
+      return false;
+    });
+    if (!isHeader) currentLines.push(line);
+    // Save lines to section
+    sections[current] = (sections[current] || '') + (isHeader ? '' : line + '\n');
+  }
+  return sections;
+}
+
+/**
+ * LOCAL resume parser — 100% offline, uses section-header splitting + regex.
+ * Covers: skills, education, experience, projects, certifications.
+ * Used as fallback when Gemini API is unavailable or rate-limited.
  */
 function localParseResume(text) {
   const lower = text.toLowerCase();
+  const sections = splitSections(text);
 
-  // ── Skills dictionaries ────────────────────────────────────────────
-  const LANGUAGES = ['python','javascript','typescript','java','c++','c#','c','go','golang','rust','kotlin','swift','ruby','php','scala','r','matlab','bash','shell','sql','html','css'];
-  const FRAMEWORKS = ['react','next.js','nextjs','vue','angular','svelte','node.js','nodejs','express','fastapi','flask','django','spring','laravel','rails','nestjs','nuxt','redux','tailwind','bootstrap','material-ui','chakra-ui'];
-  const TOOLS = ['git','github','gitlab','docker','kubernetes','aws','azure','gcp','firebase','vercel','netlify','nginx','linux','postgresql','mysql','mongodb','redis','elasticsearch','graphql','rest','webpack','vite','jest','cypress','terraform','jenkins','ci/cd','figma','postman'];
-  const SOFT = ['leadership','communication','teamwork','problem solving','critical thinking','agile','scrum','project management','collaboration','time management'];
-  const ALL_SKILLS = [...LANGUAGES, ...FRAMEWORKS, ...TOOLS];
+  // ── 1. SKILLS (keyword match across whole document) ─────────────────
+  const LANGUAGES  = ['Python','JavaScript','TypeScript','Java','C++','C#','Go','Golang','Rust','Kotlin','Swift','Ruby','PHP','Scala','R','MATLAB','Bash','Shell','SQL','HTML','CSS','Dart'];
+  const FRAMEWORKS = ['React','Next.js','Vue','Angular','Svelte','Node.js','Express','FastAPI','Flask','Django','Spring','Laravel','Rails','NestJS','Nuxt','Redux','Tailwind','Bootstrap','Flutter','React Native'];
+  const TOOLS      = ['Git','GitHub','GitLab','Docker','Kubernetes','AWS','Azure','GCP','Firebase','Vercel','Netlify','Nginx','Linux','PostgreSQL','MySQL','MongoDB','Redis','Elasticsearch','GraphQL','REST','Webpack','Vite','Jest','Cypress','Terraform','Jenkins','Figma','Postman','Pandas','NumPy','TensorFlow','PyTorch','Scikit-learn','Power BI','Tableau','Excel','Jira','Linux'];
+  const SOFT       = ['Leadership','Communication','Teamwork','Problem Solving','Critical Thinking','Agile','Scrum','Project Management','Collaboration','Time Management'];
 
   const found = { languages: [], frameworks: [], tools: [], soft: [], technical: [] };
 
   for (const s of LANGUAGES) {
-    const re = new RegExp(`\\b${s.replace(/[.+]/g, '\\$&')}\\b`, 'i');
-    if (re.test(text)) found.languages.push(s.charAt(0).toUpperCase() + s.slice(1));
+    if (new RegExp('\\b' + s.replace(/[.+]/g, '\\$&') + '\\b', 'i').test(text)) found.languages.push(s);
   }
   for (const s of FRAMEWORKS) {
-    const re = new RegExp(`\\b${s.replace(/[.+]/g, '\\$&')}\\b`, 'i');
-    if (re.test(text)) found.frameworks.push(s.charAt(0).toUpperCase() + s.slice(1));
+    if (new RegExp('\\b' + s.replace(/[.+]/g, '\\$&') + '\\b', 'i').test(text)) found.frameworks.push(s);
   }
   for (const s of TOOLS) {
-    const re = new RegExp(`\\b${s.replace(/[.+/]/g, '\\$&').replace('ci/cd','ci')}\\b`, 'i');
-    if (re.test(text)) found.tools.push(s.toUpperCase().length <= 4 ? s.toUpperCase() : s.charAt(0).toUpperCase() + s.slice(1));
+    if (new RegExp('\\b' + s.replace(/[.+]/g, '\\$&') + '\\b', 'i').test(text)) found.tools.push(s);
   }
   for (const s of SOFT) {
-    if (lower.includes(s)) found.soft.push(s.replace(/\b\w/g, c => c.toUpperCase()));
+    if (lower.includes(s.toLowerCase())) found.soft.push(s);
   }
-
   const allFlat = [...new Set([...found.languages, ...found.frameworks, ...found.tools])];
 
-  // ── Education: find degree lines ───────────────────────────────────
-  const DEGREES = ['b.tech','b.e.','b.sc','b.com','m.tech','m.sc','m.e.','mba','bca','mca','bachelor','master','phd','diploma','b.tech.','be ','me '];
+  // ── 2. EDUCATION ────────────────────────────────────────────────────
+  const DEGREES = ['b.tech','b.e','b.sc','b.com','m.tech','m.sc','m.e','mba','bca','mca','bachelor','master','phd','ph.d','diploma','be ','me ','b.a','m.a'];
   const education = [];
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i].toLowerCase();
+  const eduText = sections.education || text;
+  const allLines = eduText.split('\n').map(l => l.trim()).filter(Boolean);
+  for (let i = 0; i < allLines.length; i++) {
+    const l = allLines[i].toLowerCase();
     if (DEGREES.some(d => l.includes(d))) {
-      const yearMatch = lines[i].match(/\b(19|20)\d{2}\b/g);
+      const yearMatch = allLines[i].match(/\b(19|20)\d{2}\b/g);
+      const gradeMatch = allLines[i].match(/(\d+\.?\d*)\s*(cgpa|gpa|%|percent)/i)
+                      || (allLines[i+1] || '').match(/(\d+\.?\d*)\s*(cgpa|gpa|%|percent)/i);
+      // Clean institution: strip box/unknown chars, truncate at coursework noise
+      let rawInst = allLines[i+1] && !DEGREES.some(d => allLines[i+1].toLowerCase().includes(d)) ? allLines[i+1] : '';
+      // Remove non-printable / box characters (PDF artifacts like □, \uFFFD, etc.)
+      rawInst = rawInst.replace(/[\u0000-\u001F\u007F-\u009F\uFFFD\u25A1\uFFFE\uFFFF]/g, '').trim();
+      // Truncate at coursework/noise phrases
+      const noiseRe = /\s*(with relevant|relevant coursework|coursework in|courses:|including:|\(see below\))/i;
+      const noiseIdx = rawInst.search(noiseRe);
+      if (noiseIdx > -1) rawInst = rawInst.substring(0, noiseIdx).trim();
+      // Skip if line looks like coursework, not an institution
+      const looksLikeNoise = /^(relevant|coursework|gpa|grade|cgpa|\d|•|-)/i.test(rawInst);
       education.push({
-        degree: lines[i].substring(0, 100),
-        institution: lines[i + 1] ? lines[i + 1].substring(0, 80) : '',
-        year: yearMatch ? yearMatch.join(' - ') : '',
-        grade: '',
+        degree: allLines[i]
+          .replace(/[\(\[]\s*(19|20)\d{2}\s*[-–]\s*(19|20)?\d{0,4}\s*[\)\]]/g, '') // remove (2022-2026)
+          .replace(/\b(19|20)\d{2}\s*[-–]\s*(19|20)?\d{2,4}\b/g, '')               // remove bare 2022-2026
+          .replace(/\s{2,}/g, ' ').trim().substring(0, 120),
+        institution: looksLikeNoise ? '' : rawInst.substring(0, 100),
+        year: yearMatch ? [...new Set(yearMatch)].join(' - ') : '',
+        grade: gradeMatch ? gradeMatch[0] : '',
         highlights: [],
       });
     }
   }
 
-  // ── Experience: find company/role blocks after "experience" heading ─
+  // ── 3. EXPERIENCE ───────────────────────────────────────────────────
   const experience = [];
-  const expIdx = lower.indexOf('experience');
-  if (expIdx > -1) {
-    const expBlock = text.substring(expIdx, expIdx + 2000);
-    const expLines = expBlock.split('\n').map(l => l.trim()).filter(Boolean);
+  const expText = sections.experience || '';
+  if (expText.trim()) {
+    const expLines = expText.split('\n').map(l => l.trim()).filter(Boolean);
     let current = null;
-    for (const line of expLines.slice(1)) {
-      const low = line.toLowerCase();
-      if (low.includes('experience') || low.includes('education') || low.includes('project') || low.includes('skill')) break;
-      const dateMatch = line.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)[\w\s,]*\d{4}/i);
-      if (dateMatch || line.match(/\b20\d{2}\b.*\b(20\d{2}|present|current)\b/i)) {
+    const DATE_RE = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s,]*\d{4}|\b20\d{2}\b.{0,10}(20\d{2}|present|current|now)/i;
+    const ROLE_KEYWORDS = /engineer|developer|analyst|intern(ship)?|trainee|associate|manager|designer|consultant|scientist|architect|lead|director|head/i;
+
+    for (const line of expLines) {
+      if (DATE_RE.test(line)) {
         if (current) experience.push(current);
-        current = { company: '', role: '', duration: line, type: 'Full-time', highlights: [], technologies: found.languages.slice(0, 3) };
+        current = { company: '', role: '', duration: line, type: 'Full-time', highlights: [], technologies: found.languages.slice(0, 4) };
       } else if (current) {
-        if (!current.role && line.length < 60) current.role = line;
-        else if (!current.company && line.length < 60) current.company = line;
-        else if (line.startsWith('•') || line.startsWith('-') || line.startsWith('·')) {
-          current.highlights.push(line.replace(/^[•\-·]\s*/, ''));
+        if (!current.role && ROLE_KEYWORDS.test(line) && line.length < 80) {
+          current.role = line;
+        } else if (!current.company && line.length < 80 && !line.match(/^[•\-·▪]/)) {
+          current.company = line;
+        } else if (line.match(/^[•\-·▪]/) || (line.length > 20 && current.role)) {
+          current.highlights.push(line.replace(/^[•\-·▪]\s*/, '').substring(0, 200));
+        }
+      } else {
+        // Before any date found — check if line looks like company/role
+        if (ROLE_KEYWORDS.test(line) && line.length < 80) {
+          current = { company: '', role: line, duration: '', type: 'Full-time', highlights: [], technologies: found.languages.slice(0, 4) };
         }
       }
     }
     if (current) experience.push(current);
   }
 
+  // ── 4. PROJECTS ─────────────────────────────────────────────────────
+  const projects = [];
+  const projText = sections.projects || '';
+  if (projText.trim()) {
+    const projLines = projText.split('\n').map(l => l.trim()).filter(Boolean);
+    let current = null;
+    const TECH_LINE = /\b(tech|built with|stack|technologies|tools used|using)\b/i;
+    const BULLET = /^[•\-·▪]/;
+    const GITHUB_RE = /github\.com\/[\w\-]+\/[\w\-]+/i;
+
+    for (const line of projLines) {
+      const githubMatch = line.match(GITHUB_RE);
+      if (line.length < 80 && !BULLET.test(line) && !TECH_LINE.test(line) && line.length > 3) {
+        // Looks like a project title
+        if (current) projects.push(current);
+        current = { name: line, description: '', technologies: [], link: githubMatch ? githubMatch[0] : '' };
+      } else if (current) {
+        if (BULLET.test(line)) {
+          const clean = line.replace(/^[•\-·▪]\s*/, '');
+          if (TECH_LINE.test(clean)) {
+            // Extract tech names from this line
+            const techFound = [...LANGUAGES, ...FRAMEWORKS, ...TOOLS].filter(t =>
+              new RegExp('\\b' + t.replace(/[.+]/g, '\\$&') + '\\b', 'i').test(clean)
+            );
+            current.technologies = techFound.length > 0 ? techFound : current.technologies;
+          } else {
+            current.description += (current.description ? ' ' : '') + clean;
+          }
+        } else if (githubMatch && !current.link) {
+          current.link = githubMatch[0];
+        } else if (line.length > 20 && !current.description) {
+          current.description = line.substring(0, 200);
+        }
+        // Detect technologies by scanning each project line
+        const detected = [...LANGUAGES, ...FRAMEWORKS, ...TOOLS].filter(t =>
+          new RegExp('\\b' + t.replace(/[.+]/g, '\\$&') + '\\b', 'i').test(line)
+        );
+        if (detected.length > 0) current.technologies = [...new Set([...current.technologies, ...detected])];
+      }
+    }
+    if (current) projects.push(current);
+  }
+
+  // ── 5. CERTIFICATIONS ───────────────────────────────────────────────
+  const certifications = [];
+  const certText = sections.certifications || '';
+  const CERT_KEYWORDS = /certif|certified|aws certified|google cloud|microsoft|oracle|cisco|comptia|pmp|scrum master|coursera|udemy|nptel|hackerrank|leetcode/i;
+
+  if (certText.trim()) {
+    const certLines = certText.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const line of certLines) {
+      if (line.length > 5 && line.length < 200) {
+        certifications.push(line.replace(/^[•\-·▪\d.]\s*/, ''));
+      }
+    }
+  } else {
+    // If no certifications section, scan full text for cert-like lines
+    const allTextLines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const line of allTextLines) {
+      if (CERT_KEYWORDS.test(line) && line.length < 150 && line.length > 8) {
+        certifications.push(line.replace(/^[•\-·▪\d.]\s*/, ''));
+      }
+    }
+  }
+
   return {
-    summary: `Candidate profile extracted from resume. ${allFlat.length} skills detected including ${allFlat.slice(0, 5).join(', ')}.`,
+    summary: `${allFlat.length} skills detected including ${allFlat.slice(0, 5).join(', ')}. ${education.length} education entr${education.length === 1 ? 'y' : 'ies'}, ${experience.length} experience entr${experience.length === 1 ? 'y' : 'ies'}.`,
     skills: found,
-    education: education.slice(0, 5),
-    experience: experience.slice(0, 5),
-    projects: [],
-    certifications: [],
+    education: education.slice(0, 6),
+    experience: experience.slice(0, 6),
+    projects: projects.slice(0, 8),
+    certifications: [...new Set(certifications)].slice(0, 10),
     all_skills_flat: allFlat,
-    _source: 'local', // marks this as locally parsed (not Gemini)
+    _source: 'local',
   };
 }
+
 
 /**
  * Extract skills from resume text via Gemini API

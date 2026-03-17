@@ -46,60 +46,35 @@ App runs at → `http://localhost:5173`
 
 ```
 BrainHireAi/
-│
 ├── server/
 │   ├── db/
 │   │   ├── pool.js          # PostgreSQL connection pool
 │   │   └── schema.sql       # Database schema
-│   │
 │   ├── middleware/
-│   │   └── auth.js          # JWT authentication middleware
-│   │
+│   │   └── auth.js          # JWT auth middleware
 │   ├── routes/
-│   │   ├── auth.js          # Register / Login APIs
-│   │   ├── resume.js        # Resume upload + skill extraction
-│   │   ├── interview.js     # Interview session + AI question generation
-│   │   └── analytics.js     # Score tracking + dashboard analytics
-│   │
+│   │   ├── auth.js          # Register / Login
+│   │   ├── resume.js        # PDF upload + skill extraction
+│   │   ├── interview.js     # Session management + Gemini Q generation
+│   │   └── analytics.js    # Scores + dashboard stats
 │   ├── services/
-│   │   └── gemini.js        # Gemini AI service (questions, follow-ups, evaluation)
-│   │
+│   │   └── gemini.js        # Gemini AI: questions, follow-ups, evaluation
 │   ├── uploads/             # Uploaded resume PDFs (auto-created)
-│   │
-│   ├── index.js             # Express server entry point
-│   ├── package.json
-│   ├── .env.example
-│   └── README.md
+│   ├── index.js             # Express entry point
+│   └── .env.example
 │
-├── client/
-│   ├── public/
-│   │   ├── favicon.svg
-│   │   └── icons.svg
-│   │
-│   ├── src/
-│   │   ├── api/
-│   │   │   └── axios.js           # Axios instance + JWT interceptor
-│   │   │
-│   │   ├── context/
-│   │   │   └── AuthContext.jsx
-│   │   │
-│   │   ├── components/
-│   │   │   └── Navbar.jsx
-│   │   │
-│   │   ├── pages/
-│   │   │   ├── Login.jsx          # Login / Register UI
-│   │   │   ├── Dashboard.jsx      # Interview dashboard
-│   │   │   ├── ResumeUpload.jsx   # Resume upload + skill detection
-│   │   │   ├── Interview.jsx      # AI interview session
-│   │   │   └── Analytics.jsx      # Performance analytics
-│   │   │
-│   │   ├── main.jsx
-│   │   └── index.css              # Global styles / dark theme
-│   │
-│   ├── package.json
-│   └── vite.config.js
-│
-└── README.md
+└── client/
+    └── src/
+        ├── api/axios.js          # Axios + JWT interceptor
+        ├── context/AuthContext.jsx
+        ├── components/Navbar.jsx
+        ├── pages/
+        │   ├── Login.jsx         # Register + Login split-pane
+        │   ├── Dashboard.jsx     # Stats, interview type cards, recent sessions
+        │   ├── ResumeUpload.jsx  # Drag-and-drop PDF + skill display
+        │   ├── Interview.jsx     # AI Q&A with STT/TTS
+        │   └── Analytics.jsx     # Scores, charts, feedback
+        └── index.css             # Dark theme design system
 ```
 
 ## 🎯 7-Step Interview Flow
@@ -121,7 +96,7 @@ DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=brainhire_db
 DB_USER=postgres
-DB_PASSWORD=your_database_password
+DB_PASSWORD=postgres
 JWT_SECRET=your_super_secret_jwt_key_here
 GEMINI_API_KEY=your_gemini_api_key_here
 ```

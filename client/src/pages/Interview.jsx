@@ -48,12 +48,15 @@ const speak = (text) => {
   if (!('speechSynthesis' in window)) return;
   window.speechSynthesis.cancel();
   const utt = new SpeechSynthesisUtterance(text);
-  utt.rate = 0.95;
+  utt.rate = 1;
   utt.pitch = 1;
   utt.lang = 'en-US';
-  // prefer a natural-sounding voice
+  // prefer a male American English voice
   const voices = window.speechSynthesis.getVoices();
-  const preferred = voices.find(v => v.name.includes('Google') || v.name.includes('Natural') || v.name.includes('Samantha'));
+  const preferred = voices.find(v => 
+    v.lang.includes('en-US') && 
+    /(David|Mark|Guy|Matthew|Male)/i.test(v.name)
+  ) || voices.find(v => v.lang.includes('en-US') && v.name.includes('Google'));
   if (preferred) utt.voice = preferred;
   window.speechSynthesis.speak(utt);
 };

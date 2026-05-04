@@ -1,6 +1,10 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
+if (!process.env.GEMINI_API_KEY) {
+  throw new Error("Missing GEMINI_API_KEY in environment variables");
+}
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
@@ -13,7 +17,12 @@ async function generateNextQuestion(resumeText, skills, interviewType, history) 
   
   const historyText = isFirst ? 'None' : history.map((qa, i) => {
     let evalStr = qa.evaluation_json ? JSON.stringify(qa.evaluation_json) : 'N/A';
-    return `--- Q${i + 1} ---\nQuestion: ${qa.question}\nAnswer: ${qa.answer}\nPrevious Evaluation: ${evalStr}`;
+    let wasFollowUp = false;
+    try {
+      const parsedEval = typeof qa.evaluation_json === 'string' ? JSON.parse(qa.evaluation_json) : qa.evaluation_json;
+      wasFollowUp = parsedEval?.follow_up === true;
+    } catch(e) {}
+    return `--- Q${i + 1} ---\nQuestion: ${qa.question}\nAnswer: ${qa.answer}\nWas Follow-up: ${wasFollowUp}\nPrevious Evaluation: ${evalStr}`;
   }).join('\n\n');
 
   const topicsCovered = isFirst ? 'None' : history.map(qa => {
@@ -28,6 +37,15 @@ async function generateNextQuestion(resumeText, skills, interviewType, history) 
       : history[history.length - 1].evaluation_json)?.difficulty || 'N/A'
   ) : 'N/A';
 
+  const lastWasFollowUp = history.length > 0 ? (
+    (typeof history[history.length - 1].evaluation_json === 'string' 
+      ? JSON.parse(history[history.length - 1].evaluation_json) 
+      : history[history.length - 1].evaluation_json)?.follow_up === true
+  ) : false;
+
+  const lastAnswerLength = history.length > 0 ? (history[history.length - 1].answer || "").split(/\s+/).length : 0;
+  const allowFollowUp = lastAnswerLength < 20;
+
   const firstQuestionPrompt = isFirst ? `
 This is the FIRST question.
 - For Technical → start with medium-level resume-based or fundamental question
@@ -35,21 +53,7 @@ This is the FIRST question.
 - For Mixed → start with HR warm-up
   ` : '';
 
-  const evaluationPrompt = isFirst ? `
-Because this is the first question, you do not need to evaluate any previous answer. Provide 0 for correctness, clarity, and depth.
-  ` : `
-Before generating the next question, evaluate the LAST answer:
-Return:
-- correctness (0–10)
-- clarity (0–10)
-- depth (0–10)
-
-Also classify:
-- topic
-- difficulty level (easy / medium / hard)
-
-Use this evaluation to decide the next question.
-  `;
+  // Evaluation is now handled separately, so we just inform the model of the history context
 
   const prompt = `
 🔷 🔹 SYSTEM / INSTRUCTION PROMPT
@@ -74,6 +78,9 @@ IMPORTANT RULES:
 3. Question must be clear, concise, and professional
 4. Follow adaptive difficulty rules strictly
 5. Prefer resume-based personalization when possible
+6. STRICT RULE: Do NOT ask generic follow-up questions like "Can you elaborate more?", "Explain further?", or "Tell me more". Every follow-up MUST be highly SPECIFIC to the candidate's previous answer.
+7. DO NOT generate vague or filler questions. Bad examples: "Explain more", "Can you elaborate?", "Tell me more". These are NOT allowed.
+8. If the LAST question was already a follow-up, do NOT ask another follow-up. Instead: Change topic, increase/decrease difficulty, or move to a new category.
 
 🔷 🔹 INPUT CONTEXT TEMPLATE
 CANDIDATE RESUME:
@@ -89,6 +96,8 @@ CURRENT STATE:
 - Question Number: ${history.length + 1}
 - Topics Covered: ${isFirst ? 'None' : topicsCovered.join(', ')}
 - Difficulty Level: ${currentDifficulty}
+- Last Question Was Follow-Up: ${lastWasFollowUp}
+- Allow Follow-Up For This Question: ${allowFollowUp} (If false, you MUST move to a new topic or concept)
 
 HISTORY:
 ${historyText}
@@ -119,8 +128,7 @@ ${firstQuestionPrompt}
    - Do NOT follow a fixed sequence
    - Balance both technical depth and behavioral evaluation
 
-🔷 🔹 EVALUATION LOGIC (VERY IMPORTANT)
-${evaluationPrompt}
+
 
 🔷 🔹 OUTPUT FORMAT (STRICT JSON)
 {
@@ -129,11 +137,6 @@ ${evaluationPrompt}
   "topic": "DSA | OS | DBMS | Resume | Behavioral | System Design | Debugging",
   "difficulty": "easy | medium | hard",
   "expected_answer_points": ["point1", "point2", "point3"],
-  "evaluation": {
-    "correctness": number,
-    "clarity": number,
-    "depth": number
-  },
   "follow_up": boolean
 }
 `;
@@ -141,93 +144,136 @@ ${evaluationPrompt}
   try {
     const result = await model.generateContent(prompt);
     const text = result.response.text().trim();
-    return extractJSON(text);
+    console.log("RAW GEMINI:", text);
+    const parsed = extractJSON(text);
+
+    if (interviewType === "hr") {
+      parsed.topic = "Behavioral";
+    }
+    if (interviewType === "technical") {
+      parsed.topic = parsed.topic || "Technical";
+    }
+
+    const badPatterns = ["elaborate more", "explain more", "tell me more", "explain further"];
+    if (parsed.question && badPatterns.some(p => parsed.question.toLowerCase().includes(p))) {
+      throw new Error("Generated question triggered low-quality output blocker");
+    }
+
+    return parsed;
   } catch (err) {
     console.error('[Gemini] generateNextQuestion failed:', err.message);
-    // Graceful fallback if API fails
-    return {
-      question: isFirst ? 
-        (interviewType === 'hr' ? "Tell me about yourself and your background." : "Could you explain a complex problem you've solved recently?") : 
-        "That's interesting. Could you elaborate more on that point or provide a specific example?",
-      type: interviewType,
-      topic: isFirst ? "Introduction" : "Follow-up",
-      difficulty: "easy",
-      expected_answer_points: ["Candidate provides a structured response"],
-      evaluation: {
-        correctness: 5,
-        clarity: 5,
-        depth: 5
-      },
-      follow_up: !isFirst
-    };
+    if (err.message.includes("API_KEY_INVALID")) {
+      throw new Error("AI service unavailable. Please check API key.");
+    }
+    throw err;
   }
 }
 
 /**
- * Evaluate the full interview session — returns scores and feedback
+ * Evaluate a single answer (typically used for the final question in a session)
  */
-async function evaluateSession(resumeText, history, interviewType) {
-  const historyText = history
-    .map((qa, i) => `Q${i + 1}: ${qa.question}\nA${i + 1}: ${qa.answer || '(No answer provided)'}`)
-    .join('\n\n');
+async function evaluateSingleAnswer(question, answer, interviewType, expectedPoints = []) {
+  if (!answer || answer.trim() === "") {
+    return {
+      evaluation: {
+        correctness: 0,
+        clarity: 0,
+        depth: 0,
+        strengths: [],
+        weaknesses: ["No answer provided"],
+        improvement_suggestions: ["Attempt the question with a structured response"],
+        confidence: "low"
+      }
+    };
+  }
 
   const prompt = `
-You are an expert technical interview evaluator. Evaluate the following interview session and provide detailed, actionable feedback.
+🔷 🔹 SYSTEM / INSTRUCTION PROMPT
+You are an expert technical and behavioral interviewer.
 
-CANDIDATE RESUME:
-${resumeText.substring(0, 2000)}
+Your task is to evaluate a candidate's answer to a question in a structured and objective way.
 
-INTERVIEW TYPE: ${interviewType}
+You must:
+- Score the answer
+- Identify strengths and weaknesses
+- Keep evaluation concise and consistent
+- Be strict but fair
 
-FULL Q&A:
-${historyText}
+IMPORTANT RULES:
+1. Return ONLY valid JSON (no extra text)
+2. Do NOT explain outside JSON
+3. Scores must be integers between 0 and 10
+4. Base evaluation ONLY on the given answer (no assumptions)
+5. If answer is vague, incomplete, or incorrect → give low scores
+6. If answer is empty or irrelevant → score very low (0–2)
+7. Be consistent in scoring across similar answers. Do not inflate scores.
 
-Provide a JSON response with EXACTLY this structure:
+🔷 🔹 INPUT TEMPLATE
+QUESTION:
+${question}
+
+CANDIDATE ANSWER:
+${answer}
+
+INTERVIEW TYPE:
+${interviewType}
+
+EXPECTED KEY POINTS (for reference):
+${Array.isArray(expectedPoints) ? expectedPoints.join(', ') : expectedPoints}
+
+🔷 🔹 EVALUATION LOGIC (IMPORTANT)
+Evaluate across these dimensions:
+
+1. correctness:
+- Is the answer factually accurate?
+
+2. clarity:
+- Is the answer clearly explained and well-structured?
+
+3. depth:
+- Does the answer show deep understanding or just surface-level knowledge?
+
+SCORING GUIDE:
+
+9–10 → Excellent (complete, clear, deep)
+7–8 → Good (mostly correct, minor gaps)
+5–6 → Average (basic understanding, lacks depth)
+3–4 → Weak (partial or unclear)
+0–2 → Poor (incorrect, vague, or irrelevant)
+
+🔷 🔹 OUTPUT FORMAT (STRICT)
 {
-  "overall_score": <0-100>,
-  "technical_score": <0-100>,
-  "communication_score": <0-100>,
-  "strengths": ["strength1", "strength2", "strength3"],
-  "improvements": ["improvement1", "improvement2", "improvement3"],
-  "question_feedback": [
-    {
-      "question": "...",
-      "answer": "...",
-      "score": <0-10>,
-      "feedback": "Brief specific feedback on this answer"
-    }
-  ],
-  "overall_feedback": "2-3 sentence summary of the candidate's performance",
-  "recommended_resources": ["resource or topic to study 1", "resource 2"]
+  "correctness": number,
+  "clarity": number,
+  "depth": number,
+  "strengths": ["point1", "point2"],
+  "weaknesses": ["point1", "point2"],
+  "improvement_suggestions": ["point1", "point2"],
+  "confidence": "low | medium | high"
 }
-
-Return ONLY valid JSON, no markdown code blocks, no extra text.
 `;
 
   try {
     const result = await model.generateContent(prompt);
     const text = result.response.text().trim();
-
-    // Strip markdown code blocks if present
-    const cleaned = text.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim();
-    return JSON.parse(cleaned);
+    const parsed = extractJSON(text);
+    return { evaluation: parsed };
   } catch (err) {
-    console.error('[Gemini] evaluateSession failed:', err.message);
+    console.error('[Gemini] evaluateSingleAnswer failed:', err.message);
+    if (err.message.includes("API_KEY_INVALID")) {
+      throw new Error("AI service unavailable. Please check API key.");
+    }
     // Graceful fallback if API fails
     return {
-      overall_score: 50,
-      technical_score: 50,
-      communication_score: 50,
-      strengths: ["Completed the interview session"],
-      improvements: ["Due to API rate limits, a detailed evaluation could not be generated"],
-      question_feedback: history.map(qa => ({
-        question: qa.question,
-        answer: qa.answer || "",
-        score: 5,
-        feedback: "Feedback unavailable due to API rate limit."
-      })),
-      overall_feedback: "The interview was completed, but detailed AI evaluation is temporarily unavailable because the API quota was exceeded. Please try reviewing your answers manually.",
-      recommended_resources: ["Review the topics covered in this session"]
+      evaluation: {
+        correctness: 5,
+        clarity: 5,
+        depth: 5,
+        strengths: ["Provided an answer"],
+        weaknesses: ["API failure prevented detailed AI evaluation"],
+        improvement_suggestions: ["Try answering again or reviewing the material manually"],
+        confidence: "low"
+      }
     };
   }
 }
@@ -557,6 +603,9 @@ async function parseResume(resumeText) {
     };
   } catch (err) {
     console.error('[Gemini] parseResume error:', err.message);
+    if (err.message.includes("API_KEY_INVALID")) {
+      throw new Error("AI service unavailable. Please check API key.");
+    }
     // Gemini failed — use the local offline parser so users still get real data
     console.log('[Local] Falling back to local regex-based resume parser...');
     const local = localParseResume(resumeText);
@@ -565,4 +614,4 @@ async function parseResume(resumeText) {
   }
 }
 
-module.exports = { generateNextQuestion, evaluateSession, extractSkills, parseResume };
+module.exports = { generateNextQuestion, evaluateSingleAnswer, extractSkills, parseResume };

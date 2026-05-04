@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool');
 const { authenticateToken } = require('../middleware/auth');
-const { generateNextQuestion, evaluateSession } = require('../services/gemini');
+const { generateNextQuestion, evaluateSingleAnswer } = require('../services/gemini');
+const { evaluateAnswer } = require('../services/geminiService');
 
 // POST /api/interview/start — start a new session, generate initial questions
 router.post('/start', authenticateToken, async (req, res) => {
@@ -111,21 +112,25 @@ router.post('/next', authenticateToken, async (req, res) => {
 
     const max_questions = interview_type === 'hr' ? 6 : interview_type === 'technical' ? 7 : 8;
     
-    // End interview if we hit the limit or performance dictates early exit (can be added to prompt logic later)
+    // End interview if we hit the limit or performance dictates early exit
     if (history.length >= max_questions) {
       return res.json({ completed: true });
     }
 
-    // 4. Generate next question and evaluation
-    const nextData = await generateNextQuestion(extracted_text, skills, interview_type, history);
-
-    // 5. Update previous QA with evaluation
-    if (nextData.evaluation) {
-       const prevQa = history.find(q => q.id === qa_id);
-       const existingEval = typeof prevQa.evaluation_json === 'string' ? JSON.parse(prevQa.evaluation_json) : (prevQa.evaluation_json || {});
-       const mergedEval = { ...existingEval, ...nextData.evaluation };
-       await pool.query('UPDATE interview_qa SET evaluation_json = $1 WHERE id = $2', [JSON.stringify(mergedEval), qa_id]);
+    // 4. Evaluate the current answer FIRST
+    const currentQa = history.find(q => q.id === qa_id);
+    if (currentQa) {
+      const evaluation = await evaluateAnswer(currentQa.question, answer);
+      const existingEval = typeof currentQa.evaluation_json === 'string' ? JSON.parse(currentQa.evaluation_json) : (currentQa.evaluation_json || {});
+      const mergedEval = { ...existingEval, ...evaluation };
+      await pool.query('UPDATE interview_qa SET evaluation_json = $1 WHERE id = $2', [JSON.stringify(mergedEval), qa_id]);
+      
+      // Update history array so generateNextQuestion sees the correct score
+      currentQa.evaluation_json = mergedEval;
     }
+
+    // 5. Generate next question using updated history
+    const nextData = await generateNextQuestion(extracted_text, skills, interview_type, history);
 
     // 6. Save new question
     const lastOrder = history.length + 1;
@@ -168,12 +173,108 @@ router.post('/end', authenticateToken, async (req, res) => {
 
     // Get full Q&A
     const qaRes = await pool.query(
-      'SELECT question, answer FROM interview_qa WHERE session_id = $1 ORDER BY question_order',
+      'SELECT id, question, answer, evaluation_json, question_order FROM interview_qa WHERE session_id = $1 ORDER BY question_order',
       [session_id]
     );
 
-    // Evaluate via Gemini
-    const evaluation = await evaluateSession(extracted_text, qaRes.rows, interview_type);
+    let history = qaRes.rows;
+
+    // Check if the final answer needs evaluation
+    const lastQa = history[history.length - 1];
+    let lastEval = null;
+    try {
+      lastEval = typeof lastQa.evaluation_json === 'string' ? JSON.parse(lastQa.evaluation_json) : (lastQa.evaluation_json || {});
+    } catch(e) { lastEval = {}; }
+
+    if (!lastEval.score) {
+      // Evaluate the final answer individually
+      const evaluation = await evaluateAnswer(lastQa.question, lastQa.answer);
+      const mergedEval = { ...lastEval, ...evaluation };
+      await pool.query('UPDATE interview_qa SET evaluation_json = $1 WHERE id = $2', [JSON.stringify(mergedEval), lastQa.id]);
+      lastQa.evaluation_json = mergedEval;
+    }
+
+    // Compute Analytics Locally
+    let totalScore = 0, totalCommunication = 0;
+    let technicalQuestionsCount = 0;
+    let totalTechnical = 0;
+    
+    const question_feedback = history.map(qa => {
+      let evalData = typeof qa.evaluation_json === 'string' ? JSON.parse(qa.evaluation_json) : (qa.evaluation_json || {});
+      
+      const s = evalData.score || 5;
+      const ts = evalData.technicalScore || 5;
+      const cs = evalData.communicationScore || 5;
+
+      totalScore += s;
+      totalCommunication += cs;
+
+      if (evalData.type === 'technical' || interview_type === 'technical') {
+        technicalQuestionsCount++;
+        totalTechnical += ts;
+      }
+
+      return {
+        question: qa.question,
+        answer: qa.answer || "",
+        score: s,
+        feedback: evalData.feedback || "Evaluated during session."
+      };
+    });
+
+    const numQuestions = history.length;
+    const overall_score = numQuestions > 0 ? Math.round((totalScore / (numQuestions * 10)) * 100) : 0;
+    const technical_score = technicalQuestionsCount > 0 ? Math.round((totalTechnical / (technicalQuestionsCount * 10)) * 100) : overall_score;
+    const communication_score = numQuestions > 0 ? Math.round((totalCommunication / (numQuestions * 10)) * 100) : 0;
+
+    // Generate Strengths Dynamically
+    const allStrengths = history
+      .map(q => typeof q.evaluation_json === 'string' ? JSON.parse(q.evaluation_json) : (q.evaluation_json || {}))
+      .flatMap(ev => ev.strengths || []);
+    const topStrengths = [...new Set(allStrengths)].filter(Boolean).slice(0, 3);
+    if (topStrengths.length === 0) topStrengths.push("Completed the interview session");
+
+    // Generate Weaknesses Dynamically
+    const allImprovements = history
+      .map(q => typeof q.evaluation_json === 'string' ? JSON.parse(q.evaluation_json) : (q.evaluation_json || {}))
+      .flatMap(ev => ev.improvements || []);
+    const topWeaknessesRaw = [...new Set(allImprovements)].filter(Boolean).slice(0, 3);
+    const improvements = topWeaknessesRaw.length > 0 
+      ? topWeaknessesRaw 
+      : ["Review your answers to identify areas for deeper technical knowledge"];
+
+    // Make Recommendations SMART
+    const recommended_resources = topWeaknessesRaw.map(topic => {
+      const t = topic.toUpperCase();
+      if (t.includes("DSA") || t.includes("CODING")) return "Practice array and string problems on LeetCode";
+      if (t.includes("OS")) return "Revise process vs thread and scheduling algorithms";
+      if (t.includes("DB") || t.includes("SQL")) return "Focus on indexing and normalization concepts";
+      if (t.includes("SYSTEM DESIGN")) return "Study scalable API design patterns and trade-offs";
+      if (t.includes("RESUME")) return "Review the technical depth of your past projects";
+      if (t.includes("BEHAVIORAL") || t.includes("HR")) return "Practice the STAR method (Situation, Task, Action, Result)";
+      return `Improve understanding of ${topic}`;
+    });
+    if (recommended_resources.length === 0) recommended_resources.push("Continue building on your existing strengths!");
+
+    // Add Variation to Overall Feedback
+    const messages = [
+      "Your performance shows strong potential with room for improvement.",
+      "You demonstrated good fundamentals but need more depth in key areas.",
+      "Your responses were consistent, but technical depth can be improved.",
+      "A solid attempt! Focus on the highlighted study areas to polish your knowledge."
+    ];
+    const overall_feedback = messages[Math.floor(Math.random() * messages.length)];
+
+    const evaluation = {
+      overall_score,
+      technical_score,
+      communication_score,
+      strengths: topStrengths,
+      improvements,
+      question_feedback,
+      overall_feedback,
+      recommended_resources
+    };
 
     // Save analytics
     const analyticsRes = await pool.query(

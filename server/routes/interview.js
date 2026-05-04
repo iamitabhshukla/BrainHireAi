@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool');
 const { authenticateToken } = require('../middleware/auth');
-const { generateQuestions, generateFollowUp, evaluateSession } = require('../services/gemini');
+const { generateNextQuestion, evaluateSession } = require('../services/gemini');
 
 // POST /api/interview/start — start a new session, generate initial questions
 router.post('/start', authenticateToken, async (req, res) => {
@@ -28,16 +28,20 @@ router.post('/start', authenticateToken, async (req, res) => {
     );
     const sessionId = sessionResult.rows[0].id;
 
-    // Generate questions via Gemini
-    const questions = await generateQuestions(extracted_text, skills, interview_type, 8);
+    // Generate FIRST question via Gemini
+    const initialData = await generateNextQuestion(extracted_text, skills, interview_type, []);
 
-    // Save questions to DB
-    for (let i = 0; i < questions.length; i++) {
-      await pool.query(
-        'INSERT INTO interview_qa (session_id, question, question_order) VALUES ($1, $2, $3)',
-        [sessionId, questions[i], i + 1]
-      );
-    }
+    // Save question to DB
+    await pool.query(
+      'INSERT INTO interview_qa (session_id, question, evaluation_json, question_order) VALUES ($1, $2, $3, $4)',
+      [sessionId, initialData.question, JSON.stringify({ 
+         topic: initialData.topic, 
+         difficulty: initialData.difficulty,
+         expected_answer_points: initialData.expected_answer_points,
+         type: initialData.type,
+         follow_up: initialData.follow_up
+       }), 1]
+    );
 
     // Fetch saved QA rows
     const qaResult = await pool.query(
@@ -45,9 +49,13 @@ router.post('/start', authenticateToken, async (req, res) => {
       [sessionId]
     );
 
+    // Determine max questions
+    const max_questions = interview_type === 'hr' ? 6 : interview_type === 'technical' ? 7 : 8;
+
     res.status(201).json({
       session_id: sessionId,
       interview_type,
+      max_questions,
       questions: qaResult.rows,
     });
   } catch (err) {
@@ -70,15 +78,20 @@ router.post('/answer', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/interview/follow-up — get one adaptive follow-up question
-router.post('/follow-up', authenticateToken, async (req, res) => {
-  const { session_id } = req.body;
-  if (!session_id) return res.status(400).json({ error: 'session_id required' });
+// POST /api/interview/next — generate the next dynamic question
+router.post('/next', authenticateToken, async (req, res) => {
+  const { session_id, qa_id, answer } = req.body;
+  if (!session_id || !qa_id || answer === undefined) 
+    return res.status(400).json({ error: 'session_id, qa_id, and answer required' });
 
   try {
-    // Get session + resume
+    // 1. Save current answer
+    await pool.query('UPDATE interview_qa SET answer = $1 WHERE id = $2', [answer, qa_id]);
+
+    // 2. Get session + resume
     const sessionRes = await pool.query(
-      `SELECT sess.resume_id, r.extracted_text FROM interview_sessions sess
+      `SELECT sess.resume_id, sess.interview_type, r.extracted_text, r.skills_json 
+       FROM interview_sessions sess
        JOIN resumes r ON r.id = sess.resume_id
        WHERE sess.id = $1 AND sess.user_id = $2`,
       [session_id, req.user.id]
@@ -86,28 +99,51 @@ router.post('/follow-up', authenticateToken, async (req, res) => {
     if (sessionRes.rows.length === 0)
       return res.status(404).json({ error: 'Session not found' });
 
-    const { extracted_text } = sessionRes.rows[0];
+    const { extracted_text, skills_json, interview_type } = sessionRes.rows[0];
+    const skills = Array.isArray(skills_json) ? skills_json : JSON.parse(skills_json || '[]');
 
-    // Get current Q&A history
+    // 3. Get current Q&A history
     const qaRes = await pool.query(
-      'SELECT question, answer FROM interview_qa WHERE session_id = $1 ORDER BY question_order',
+      'SELECT id, question, answer, evaluation_json, question_order FROM interview_qa WHERE session_id = $1 ORDER BY question_order',
       [session_id]
     );
     const history = qaRes.rows;
 
-    const followUp = await generateFollowUp(extracted_text, history);
+    const max_questions = interview_type === 'hr' ? 6 : interview_type === 'technical' ? 7 : 8;
+    
+    // End interview if we hit the limit or performance dictates early exit (can be added to prompt logic later)
+    if (history.length >= max_questions) {
+      return res.json({ completed: true });
+    }
 
-    // Save follow-up as a new QA row
+    // 4. Generate next question and evaluation
+    const nextData = await generateNextQuestion(extracted_text, skills, interview_type, history);
+
+    // 5. Update previous QA with evaluation
+    if (nextData.evaluation) {
+       const prevQa = history.find(q => q.id === qa_id);
+       const existingEval = typeof prevQa.evaluation_json === 'string' ? JSON.parse(prevQa.evaluation_json) : (prevQa.evaluation_json || {});
+       const mergedEval = { ...existingEval, ...nextData.evaluation };
+       await pool.query('UPDATE interview_qa SET evaluation_json = $1 WHERE id = $2', [JSON.stringify(mergedEval), qa_id]);
+    }
+
+    // 6. Save new question
     const lastOrder = history.length + 1;
     const newQA = await pool.query(
-      'INSERT INTO interview_qa (session_id, question, question_order) VALUES ($1, $2, $3) RETURNING id, question',
-      [session_id, followUp, lastOrder]
+      'INSERT INTO interview_qa (session_id, question, evaluation_json, question_order) VALUES ($1, $2, $3, $4) RETURNING id, question, question_order',
+      [session_id, nextData.question, JSON.stringify({ 
+         topic: nextData.topic, 
+         difficulty: nextData.difficulty,
+         expected_answer_points: nextData.expected_answer_points,
+         type: nextData.type,
+         follow_up: nextData.follow_up
+       }), lastOrder]
     );
 
     res.json(newQA.rows[0]);
   } catch (err) {
-    console.error('Follow-up error:', err);
-    res.status(500).json({ error: 'Failed to generate follow-up: ' + err.message });
+    console.error('Next question error:', err);
+    res.status(500).json({ error: 'Failed to generate next question: ' + err.message });
   }
 });
 
@@ -208,6 +244,7 @@ router.get('/sessions/:id', authenticateToken, async (req, res) => {
 
     res.json({
       session: sessionRes.rows[0],
+      max_questions: sessionRes.rows[0].interview_type === 'hr' ? 6 : sessionRes.rows[0].interview_type === 'technical' ? 7 : 8,
       qa: qaRes.rows,
       analytics: analyticsRes.rows[0] || null,
     });

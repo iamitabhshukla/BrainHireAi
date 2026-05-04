@@ -68,6 +68,7 @@ export default function Interview() {
   const [current, setCurrent] = useState(0);
   const [answer, setAnswer] = useState('');
   const [savedAnswers, setSavedAnswers] = useState({});
+  const [maxQuestions, setMaxQuestions] = useState(8);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -91,6 +92,7 @@ export default function Interview() {
             interview_type: state.interview_type || 'technical',
           });
           setSessionId(res.data.session_id);
+          setMaxQuestions(res.data.max_questions || 8);
           setQuestions(res.data.questions);
           if (ttsEnabled && res.data.questions.length > 0) {
             setTimeout(() => speak(res.data.questions[0].question), 800);
@@ -103,6 +105,7 @@ export default function Interview() {
         try {
           const res = await api.get(`/interview/sessions/${paramSessionId}`);
           setSessionId(parseInt(paramSessionId));
+          setMaxQuestions(res.data.max_questions || 8);
           setQuestions(res.data.qa);
           const ans = {};
           res.data.qa.forEach(q => { if (q.answer) ans[q.id] = q.answer; });
@@ -133,34 +136,36 @@ export default function Interview() {
     if (submitting) return;
     setSubmitting(true);
     await saveCurrentAnswer();
-    setAnswer('');
-    resetTranscript();
-    const next = current + 1;
-    if (next < questions.length) {
-      setCurrent(next);
-      if (ttsEnabled) setTimeout(() => speak(questions[next].question), 400);
-    } else {
-      toast('All questions answered! Click "End Interview" to get your results.', { icon: '✅' });
-    }
-    setSubmitting(false);
-  };
-
-  const getFollowUp = async () => {
-    if (submitting) return;
-    setSubmitting(true);
-    await saveCurrentAnswer();
-    try {
-      const res = await api.post('/interview/follow-up', { session_id: sessionId });
-      const newQ = res.data;
-      setQuestions(prev => [...prev, newQ]);
-      const idx = questions.length;
-      setCurrent(idx);
-      setAnswer('');
+    
+    // Check if we are just reviewing a past question
+    if (current < questions.length - 1) {
+      setCurrent(current + 1);
+      setAnswer(savedAnswers[questions[current + 1]?.id] || '');
       resetTranscript();
-      if (ttsEnabled) setTimeout(() => speak(newQ.question), 400);
-      toast.success('Follow-up question generated!');
+      setSubmitting(false);
+      return;
+    }
+
+    // We are on the latest question. Fetch the next one dynamically.
+    try {
+      const res = await api.post('/interview/next', {
+        session_id: sessionId,
+        qa_id: questions[current].id,
+        answer: answer.trim()
+      });
+
+      if (res.data.completed || questions.length >= maxQuestions) {
+        toast('Interview completed! Click "End Interview" to get your results.', { icon: '✅' });
+      } else {
+        const newQ = res.data;
+        setQuestions(prev => [...prev, newQ]);
+        setCurrent(questions.length);
+        setAnswer('');
+        resetTranscript();
+        if (ttsEnabled) setTimeout(() => speak(newQ.question), 400);
+      }
     } catch (err) {
-      toast.error('Failed to generate follow-up');
+      toast.error('Failed to load next question');
     }
     setSubmitting(false);
   };
@@ -198,8 +203,8 @@ export default function Interview() {
   }
 
   const currentQ = questions[current];
-  const totalQ = questions.length;
-  const progress = totalQ > 0 ? ((current + 1) / totalQ) * 100 : 0;
+  const isReadOnly = current < questions.length - 1;
+  const progress = maxQuestions > 0 ? ((questions.length) / maxQuestions) * 100 : 0;
   const answeredCount = Object.keys(savedAnswers).length;
 
   return (
@@ -211,7 +216,7 @@ export default function Interview() {
             <span className="gradient-text">AI Interview</span> Session
           </h1>
           <p style={{ color: '#64748b', fontSize: '0.82rem', marginTop: 4 }}>
-            Question {current + 1} of {totalQ} · {answeredCount} answered
+            Question {current + 1} of ~{maxQuestions} · {answeredCount} answered
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -269,53 +274,55 @@ export default function Interview() {
         <textarea
           value={answer}
           onChange={(e) => { setAnswer(e.target.value); setTranscript(e.target.value); }}
-          placeholder="Type your answer here, or use the microphone button below to speak..."
+          placeholder={isReadOnly ? "This answer has already been submitted." : "Type your answer here, or use the microphone button below to speak..."}
+          disabled={isReadOnly}
           rows={6}
           className="form-input"
-          style={{ width: '100%', resize: 'vertical', lineHeight: 1.7, fontSize: '0.95rem', fontFamily: 'Inter, sans-serif' }}
+          style={{ width: '100%', resize: 'vertical', lineHeight: 1.7, fontSize: '0.95rem', fontFamily: 'Inter, sans-serif', opacity: isReadOnly ? 0.7 : 1 }}
         />
 
         {/* Mic Controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
-          {supported && (
-            <button onClick={toggleMic} style={{
-              display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px',
-              borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '0.875rem',
-              background: listening ? 'rgba(248,113,113,0.15)' : 'rgba(139,92,246,0.15)',
-              color: listening ? '#f87171' : '#a78bfa',
-              border: `1px solid ${listening ? 'rgba(248,113,113,0.3)' : 'rgba(139,92,246,0.3)'}`,
-              animation: listening ? 'recordingPulse 1.5s infinite' : 'none',
-              transition: 'all 0.2s',
-            }}>
-              {listening ? <><MicOff size={16} /> Stop Recording</> : <><Mic size={16} /> {answer ? 'Continue Speaking' : 'Speak Your Answer'}</>}
-            </button>
-          )}
-          {listening && (
-            <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-              {[0, 1, 2, 3, 4].map(i => (
-                <div key={i} style={{
-                  width: 3, borderRadius: 2,
-                  background: '#f87171',
-                  height: `${8 + Math.random() * 16}px`,
-                  animation: `pulse ${0.5 + i * 0.1}s ease infinite alternate`,
-                }} />
-              ))}
-              <span style={{ color: '#f87171', fontSize: '0.78rem', marginLeft: 6, fontWeight: 500 }}>Listening...</span>
-            </div>
-          )}
-        </div>
+        {!isReadOnly && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
+            {supported && (
+              <button onClick={toggleMic} style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px',
+                borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '0.875rem',
+                background: listening ? 'rgba(248,113,113,0.15)' : 'rgba(139,92,246,0.15)',
+                color: listening ? '#f87171' : '#a78bfa',
+                border: `1px solid ${listening ? 'rgba(248,113,113,0.3)' : 'rgba(139,92,246,0.3)'}`,
+                animation: listening ? 'recordingPulse 1.5s infinite' : 'none',
+                transition: 'all 0.2s',
+              }}>
+                {listening ? <><MicOff size={16} /> Stop Recording</> : <><Mic size={16} /> {answer ? 'Continue Speaking' : 'Speak Your Answer'}</>}
+              </button>
+            )}
+            {listening && (
+              <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+                {[0, 1, 2, 3, 4].map(i => (
+                  <div key={i} style={{
+                    width: 3, borderRadius: 2,
+                    background: '#f87171',
+                    height: `${8 + Math.random() * 16}px`,
+                    animation: `pulse ${0.5 + i * 0.1}s ease infinite alternate`,
+                  }} />
+                ))}
+                <span style={{ color: '#f87171', fontSize: '0.78rem', marginLeft: 6, fontWeight: 500 }}>Listening...</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Action Buttons */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <button className="btn btn-primary" onClick={goNext} disabled={submitting || !answer.trim()}>
-          {submitting ? <><div className="spinner" style={{ width: 16, height: 16 }} /> Saving...</> :
-            current < totalQ - 1
-              ? <><ChevronRight size={17} /> Save & Next Question</>
-              : <><CheckCircle size={17} /> Save Final Answer</>}
-        </button>
-        <button className="btn btn-secondary btn-sm" onClick={getFollowUp} disabled={submitting}>
-          {submitting ? <Loader size={14} className="animate-spin" /> : <SkipForward size={14} />} Get Follow-up
+        <button className="btn btn-primary" onClick={goNext} disabled={submitting || (!answer.trim() && !isReadOnly)}>
+          {submitting ? <><div className="spinner" style={{ width: 16, height: 16 }} /> Analyzing...</> :
+            isReadOnly 
+              ? <><ChevronRight size={17} /> Next Question</>
+              : questions.length < maxQuestions
+                ? <><ChevronRight size={17} /> Submit & Next Question</>
+                : <><CheckCircle size={17} /> Submit Final Answer</>}
         </button>
 
         {/* Previous / Other answers */}
@@ -324,7 +331,7 @@ export default function Interview() {
             <button className="btn btn-ghost btn-sm" onClick={() => { setCurrent(Math.max(0, current - 1)); setAnswer(savedAnswers[questions[current - 1]?.id] || ''); }} disabled={current === 0}>
               ← Prev
             </button>
-            <button className="btn btn-ghost btn-sm" onClick={() => { setCurrent(Math.min(totalQ - 1, current + 1)); setAnswer(savedAnswers[questions[current + 1]?.id] || ''); }} disabled={current === totalQ - 1}>
+            <button className="btn btn-ghost btn-sm" onClick={() => { setCurrent(Math.min(questions.length - 1, current + 1)); setAnswer(savedAnswers[questions[current + 1]?.id] || ''); }} disabled={current === questions.length - 1}>
               Next →
             </button>
           </div>

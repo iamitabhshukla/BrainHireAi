@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS interview_qa (
   session_id INTEGER REFERENCES interview_sessions(id) ON DELETE CASCADE,
   question TEXT NOT NULL,
   answer TEXT DEFAULT '',
+  evaluation_json JSONB DEFAULT '{}',
   question_order INTEGER,
   created_at TIMESTAMP DEFAULT NOW()
 );

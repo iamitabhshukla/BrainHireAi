@@ -2,69 +2,165 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
 /**
- * Generate initial interview questions from resume text + skills
+ * Generate the NEXT question dynamically by evaluating the previous answer
+ * (Handles FIRST question as a special case if history is empty)
  */
-async function generateQuestions(resumeText, skills, interviewType = 'technical', count = 8) {
-  const typePrompt = interviewType === 'hr'
-    ? 'behavioural, HR, and soft-skills'
-    : interviewType === 'mixed'
-      ? 'both technical and HR behavioural'
-      : 'technical and problem-solving';
+async function generateNextQuestion(resumeText, skills, interviewType, history) {
+  const isFirst = history.length === 0;
+  
+  const historyText = isFirst ? 'None' : history.map((qa, i) => {
+    let evalStr = qa.evaluation_json ? JSON.stringify(qa.evaluation_json) : 'N/A';
+    return `--- Q${i + 1} ---\nQuestion: ${qa.question}\nAnswer: ${qa.answer}\nPrevious Evaluation: ${evalStr}`;
+  }).join('\n\n');
+
+  const topicsCovered = isFirst ? 'None' : history.map(qa => {
+    try {
+      return (typeof qa.evaluation_json === 'string' ? JSON.parse(qa.evaluation_json) : qa.evaluation_json)?.topic;
+    } catch(e) { return null; }
+  }).filter(Boolean);
+
+  const currentDifficulty = history.length > 0 ? (
+    (typeof history[history.length - 1].evaluation_json === 'string' 
+      ? JSON.parse(history[history.length - 1].evaluation_json) 
+      : history[history.length - 1].evaluation_json)?.difficulty || 'N/A'
+  ) : 'N/A';
+
+  const firstQuestionPrompt = isFirst ? `
+This is the FIRST question.
+- For Technical → start with medium-level resume-based or fundamental question
+- For HR → start with "Tell me about yourself"
+- For Mixed → start with HR warm-up
+  ` : '';
+
+  const evaluationPrompt = isFirst ? `
+Because this is the first question, you do not need to evaluate any previous answer. Provide 0 for correctness, clarity, and depth.
+  ` : `
+Before generating the next question, evaluate the LAST answer:
+Return:
+- correctness (0–10)
+- clarity (0–10)
+- depth (0–10)
+
+Also classify:
+- topic
+- difficulty level (easy / medium / hard)
+
+Use this evaluation to decide the next question.
+  `;
 
   const prompt = `
-You are an expert interviewer. Given the following resume and extracted skills, generate exactly ${count} ${typePrompt} interview questions.
+🔷 🔹 SYSTEM / INSTRUCTION PROMPT
+You are an expert AI interviewer conducting a realistic mock interview.
 
-RESUME:
-${resumeText.substring(0, 3000)}
+Your job is to generate the NEXT question based on:
+- The candidate's resume
+- Their skills
+- The interview type (Technical / HR / Mixed)
+- The full history of previous questions, answers, and evaluations
 
-SKILLS DETECTED: ${skills.join(', ')}
+You must behave like a real interviewer:
+- Ask only ONE question at a time
+- Adapt based on candidate performance
+- Avoid repeating topics or questions
+- Maintain a natural conversational tone
+- Avoid generic questions. Make questions specific to the candidate whenever possible.
 
-Rules:
-- Questions must be specific to this candidate's background
-- Mix easy, medium, and hard difficulty levels
-- No generic questions like "Tell me about yourself" — focus on the candidate's actual skills and experience
-- Return ONLY a JSON array of question strings, no extra text.
+IMPORTANT RULES:
+1. Always return a JSON object ONLY (no extra text)
+2. Do NOT include explanations outside JSON
+3. Question must be clear, concise, and professional
+4. Follow adaptive difficulty rules strictly
+5. Prefer resume-based personalization when possible
 
-Example format: ["Question 1?", "Question 2?", ...]
-`;
-
-  const result = await model.generateContent(prompt);
-  const text = result.response.text().trim();
-
-  // Extract JSON array from response
-  const match = text.match(/\[[\s\S]*\]/);
-  if (!match) throw new Error('Invalid Gemini response format for questions');
-  return JSON.parse(match[0]);
-}
-
-/**
- * Generate a dynamic follow-up question based on conversation history
- */
-async function generateFollowUp(resumeText, history) {
-  const historyText = history
-    .map((qa, i) => `Q${i + 1}: ${qa.question}\nA${i + 1}: ${qa.answer}`)
-    .join('\n\n');
-
-  const prompt = `
-You are an expert interviewer. Based on the following resume and conversation history, generate ONE smart follow-up question that probes deeper into the candidate's last answer or explores a related area they haven't discussed.
-
-RESUME SUMMARY:
+🔷 🔹 INPUT CONTEXT TEMPLATE
+CANDIDATE RESUME:
 ${resumeText.substring(0, 1500)}
 
-CONVERSATION HISTORY:
-${historyText}
+SKILLS:
+${skills.join(', ')}
 
-Rules:
-- Return ONLY the question string, nothing else.
-- Make it natural and conversational.
-- Probe for depth, examples, or clarification.
+INTERVIEW TYPE:
+${interviewType}
+
+CURRENT STATE:
+- Question Number: ${history.length + 1}
+- Topics Covered: ${isFirst ? 'None' : topicsCovered.join(', ')}
+- Difficulty Level: ${currentDifficulty}
+
+HISTORY:
+${historyText}
+${firstQuestionPrompt}
+
+🔷 🔹 ADAPTIVE LOGIC RULES
+1. If interview type is TECHNICAL:
+   - Evaluate last answer performance
+   - If score >= 7 → increase difficulty
+   - If score 4–6 → maintain difficulty
+   - If score < 4 → simplify or switch topic
+
+   Question categories:
+   - DSA / Coding
+   - CS Fundamentals (OS, DBMS, CN)
+   - Resume-based technical
+   - System Design (only if advanced)
+   - Debugging / Code reasoning
+
+2. If interview type is HR:
+   - Ask behavioral questions
+   - Use STAR method (Situation, Task, Action, Result)
+   - Always generate follow-up questions based on last answer
+   - Focus on: teamwork, conflict, leadership, failure, motivation
+
+3. If interview type is MIXED:
+   - Dynamically switch between: HR ↔ Technical ↔ Resume ↔ Situational
+   - Do NOT follow a fixed sequence
+   - Balance both technical depth and behavioral evaluation
+
+🔷 🔹 EVALUATION LOGIC (VERY IMPORTANT)
+${evaluationPrompt}
+
+🔷 🔹 OUTPUT FORMAT (STRICT JSON)
+{
+  "question": "string",
+  "type": "technical | hr | mixed",
+  "topic": "DSA | OS | DBMS | Resume | Behavioral | System Design | Debugging",
+  "difficulty": "easy | medium | hard",
+  "expected_answer_points": ["point1", "point2", "point3"],
+  "evaluation": {
+    "correctness": number,
+    "clarity": number,
+    "depth": number
+  },
+  "follow_up": boolean
+}
 `;
 
-  const result = await model.generateContent(prompt);
-  return result.response.text().trim().replace(/^["']|["']$/g, '');
+  try {
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+    return extractJSON(text);
+  } catch (err) {
+    console.error('[Gemini] generateNextQuestion failed:', err.message);
+    // Graceful fallback if API fails
+    return {
+      question: isFirst ? 
+        (interviewType === 'hr' ? "Tell me about yourself and your background." : "Could you explain a complex problem you've solved recently?") : 
+        "That's interesting. Could you elaborate more on that point or provide a specific example?",
+      type: interviewType,
+      topic: isFirst ? "Introduction" : "Follow-up",
+      difficulty: "easy",
+      expected_answer_points: ["Candidate provides a structured response"],
+      evaluation: {
+        correctness: 5,
+        clarity: 5,
+        depth: 5
+      },
+      follow_up: !isFirst
+    };
+  }
 }
 
 /**
@@ -108,12 +204,32 @@ Provide a JSON response with EXACTLY this structure:
 Return ONLY valid JSON, no markdown code blocks, no extra text.
 `;
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text().trim();
+  try {
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
 
-  // Strip markdown code blocks if present
-  const cleaned = text.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim();
-  return JSON.parse(cleaned);
+    // Strip markdown code blocks if present
+    const cleaned = text.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim();
+    return JSON.parse(cleaned);
+  } catch (err) {
+    console.error('[Gemini] evaluateSession failed:', err.message);
+    // Graceful fallback if API fails
+    return {
+      overall_score: 50,
+      technical_score: 50,
+      communication_score: 50,
+      strengths: ["Completed the interview session"],
+      improvements: ["Due to API rate limits, a detailed evaluation could not be generated"],
+      question_feedback: history.map(qa => ({
+        question: qa.question,
+        answer: qa.answer || "",
+        score: 5,
+        feedback: "Feedback unavailable due to API rate limit."
+      })),
+      overall_feedback: "The interview was completed, but detailed AI evaluation is temporarily unavailable because the API quota was exceeded. Please try reviewing your answers manually.",
+      recommended_resources: ["Review the topics covered in this session"]
+    };
+  }
 }
 
 /**
@@ -449,4 +565,4 @@ async function parseResume(resumeText) {
   }
 }
 
-module.exports = { generateQuestions, generateFollowUp, evaluateSession, extractSkills, parseResume };
+module.exports = { generateNextQuestion, evaluateSession, extractSkills, parseResume };

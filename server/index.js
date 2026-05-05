@@ -23,6 +23,7 @@ app.use('/api/resume', require('./routes/resume'));
 app.use('/api/interview', require('./routes/interview'));
 app.use('/api/interview', require('./routes/interviewRoutes'));
 app.use('/api/analytics', require('./routes/analytics'));
+app.use('/api/jobs', require('./routes/jobs'));
 
 // ── Health Check ──────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {

@@ -8,6 +8,10 @@ import ResumeUpload from './pages/ResumeUpload';
 import Interview from './pages/Interview';
 import Analytics from './pages/Analytics';
 import Navbar from './components/Navbar';
+import RecruiterDashboard from './pages/RecruiterDashboard';
+import PostJob from './pages/PostJob';
+import ApplicantsList from './pages/ApplicantsList';
+import ApplyJob from './pages/ApplyJob';
 
 const ProtectedRoute = ({ children }) => {
   const { token } = useAuth();
@@ -25,6 +29,15 @@ const AppRoutes = () => {
         <Route path="/upload" element={<ProtectedRoute><ResumeUpload /></ProtectedRoute>} />
         <Route path="/interview/:sessionId?" element={<ProtectedRoute><Interview /></ProtectedRoute>} />
         <Route path="/analytics/:sessionId?" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+        
+        {/* Recruiter Routes */}
+        <Route path="/recruiter" element={<ProtectedRoute><RecruiterDashboard /></ProtectedRoute>} />
+        <Route path="/post-job" element={<ProtectedRoute><PostJob /></ProtectedRoute>} />
+        <Route path="/jobs/:jobId/applicants" element={<ProtectedRoute><ApplicantsList /></ProtectedRoute>} />
+
+        {/* Public Candidate Invite Route */}
+        <Route path="/invite/:jobId" element={<ApplyJob />} />
+        
         <Route path="*" element={<Navigate to={token ? '/dashboard' : '/login'} replace />} />
       </Routes>
     </>

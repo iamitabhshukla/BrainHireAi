@@ -295,6 +295,13 @@ router.post('/end', authenticateToken, async (req, res) => {
       ['completed', session_id]
     );
 
+    // Link application
+    const status = evaluation.overall_score > 75 ? 'shortlisted' : evaluation.overall_score < 50 ? 'rejected' : 'pending';
+    await pool.query(
+      "UPDATE applications SET ai_score = $1, status = $2 WHERE interview_id = $3",
+      [evaluation.overall_score, status, session_id]
+    );
+
     res.json({ analytics_id: analyticsRes.rows[0].id, evaluation });
   } catch (err) {
     console.error('End interview error:', err);

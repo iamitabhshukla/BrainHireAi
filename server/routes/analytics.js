@@ -73,7 +73,9 @@ router.get('/session/:id', authenticateToken, async (req, res) => {
        FROM analytics a
        JOIN interview_sessions sess ON sess.id = a.session_id
        LEFT JOIN resumes r ON r.id = sess.resume_id
-       WHERE a.session_id = $1 AND sess.user_id = $2`,
+       LEFT JOIN applications app ON app.interview_id = sess.id
+       LEFT JOIN jobs j ON j.id = app.job_id
+       WHERE a.session_id = $1 AND (sess.user_id = $2 OR j.recruiter_id = $2)`,
       [req.params.id, req.user.id]
     );
 

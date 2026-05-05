@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Brain, LayoutDashboard, Upload, LogOut, BarChart3 } from 'lucide-react';
+import { Brain, LayoutDashboard, Upload, LogOut, BarChart3, Briefcase } from 'lucide-react';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
@@ -44,6 +44,7 @@ export default function Navbar() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           {[
             { path: '/dashboard', icon: <LayoutDashboard size={16} />, label: 'Dashboard' },
+            { path: '/recruiter', icon: <Briefcase size={16} />, label: 'Recruiter' },
             { path: '/upload', icon: <Upload size={16} />, label: 'Resume' },
             { path: '/analytics', icon: <BarChart3 size={16} />, label: 'Analytics' },
           ].map(({ path, icon, label }) => (

@@ -131,6 +131,7 @@ a:hover { color: var(--purple-500); }
 }
 .form-input:focus { border-color: var(--purple-500); box-shadow: 0 0 0 3px rgba(139,92,246,0.15); }
 .form-input::placeholder { color: var(--text-muted); }
+select.form-input option { background: var(--bg-secondary); color: var(--text-primary); }
 .form-error { font-size: 0.8rem; color: var(--red-400); }
 
 /* ── Badges ────────────────────────────────────────────────────────── */

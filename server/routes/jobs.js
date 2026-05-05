@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { parseResume } = require('../services/gemini');
 const fs = require('fs');
+const pdfParse = require('@cyber2024/pdf-parse-fixed');
 const { authenticateToken } = require('../middleware/auth');
 
 const upload = multer({ dest: 'uploads/' });
@@ -161,9 +162,24 @@ router.post('/apply/:jobId', upload.single('resume'), async (req, res) => {
       return res.status(400).json({ error: 'This job is no longer accepting applications' });
     }
 
-    const resumeText = fs.readFileSync(req.file.path, 'utf8');
-    const parsedResume = await parseResume(resumeText);
-    const skillsJson = JSON.stringify(parsedResume.skills || []);
+    let resumeText = '';
+    try {
+      const pdfBuffer = fs.readFileSync(req.file.path);
+      const pdfData = await pdfParse(pdfBuffer);
+      resumeText = pdfData.text;
+    } catch (err) {
+      console.error('PDF Parse Error:', err);
+      resumeText = fs.readFileSync(req.file.path, 'utf8').replace(/\0/g, ''); // fallback
+    }
+
+    let parsedResume = { all_skills_flat: [] };
+    try {
+      parsedResume = await parseResume(resumeText);
+    } catch (err) {
+      console.error('Gemini Parse Error:', err);
+    }
+    const skillsJson = JSON.stringify(parsedResume.all_skills_flat || []);
+    const parsedJson = JSON.stringify(parsedResume);
 
     // ✨ THE TRICK: Create a "Shadow User"
     const pseudoPassword = await bcrypt.hash(Date.now().toString(), 10);
@@ -178,9 +194,9 @@ router.post('/apply/:jobId', upload.single('resume'), async (req, res) => {
 
     // Upload Resume (linked to shadow user)
     const newResume = await pool.query(
-      `INSERT INTO resumes (user_id, filename, extracted_text, skills_json) 
-       VALUES ($1, $2, $3, $4) RETURNING id`,
-      [shadowUserId, req.file.originalname, resumeText, skillsJson]
+      `INSERT INTO resumes (user_id, filename, extracted_text, skills_json, parsed_json) 
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [shadowUserId, req.file.originalname, resumeText, skillsJson, parsedJson]
     );
 
     // Create Candidate
